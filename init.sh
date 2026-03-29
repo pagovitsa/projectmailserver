@@ -292,6 +292,43 @@ wait_for_mailserver() {
   exit 1
 }
 
+ensure_local_config_files() {
+  mkdir -p "$PROJECT_DIR/config" "$PROJECT_DIR/config/roundcube" "$PROJECT_DIR/config/opendkim/keys"
+  touch \
+    "$PROJECT_DIR/config/postfix-accounts.cf" \
+    "$PROJECT_DIR/config/postfix-virtual.cf" \
+    "$PROJECT_DIR/config/dovecot-quotas.cf"
+}
+
+config_mount_writable() {
+  cd "$PROJECT_DIR"
+  docker compose exec -T mailserver sh -lc '
+    test -d /tmp/docker-mailserver &&
+    : >> /tmp/docker-mailserver/postfix-accounts.cf &&
+    : >> /tmp/docker-mailserver/postfix-virtual.cf &&
+    : >> /tmp/docker-mailserver/dovecot-quotas.cf
+  '
+}
+
+ensure_mailserver_config_mount() {
+  wait_for_mailserver
+
+  if config_mount_writable; then
+    return
+  fi
+
+  printf 'Το mounted config path δεν ήταν έτοιμο στην πρώτη εκκίνηση. Γίνεται restart του mailserver και νέα προσπάθεια.\n' >&2
+  cd "$PROJECT_DIR"
+  docker compose restart mailserver >/dev/null
+
+  wait_for_mailserver
+
+  if ! config_mount_writable; then
+    printf 'Αποτυχία πρόσβασης στο mounted config path /tmp/docker-mailserver μετά το retry.\n' >&2
+    exit 1
+  fi
+}
+
 create_first_mailbox() {
   mailbox=$1
   password=$2
@@ -305,7 +342,7 @@ create_first_mailbox() {
     return
   fi
 
-  wait_for_mailserver
+  ensure_mailserver_config_mount
 
   cd "$PROJECT_DIR"
   docker compose exec -T mailserver setup email add "$mailbox" "$password"
@@ -462,6 +499,8 @@ mkdir -p "$PROJECT_DIR/secrets" "$PROJECT_DIR/certs/live" "$PROJECT_DIR/config" 
   "$PROJECT_DIR/config/roundcube" "$PROJECT_DIR/data/roundcube/db" "$PROJECT_DIR/data/roundcube/enigma" "$PROJECT_DIR/data/roundcube/temp" \
   "$PROJECT_DIR/letsencrypt/config" "$PROJECT_DIR/letsencrypt/work" "$PROJECT_DIR/letsencrypt/logs" \
   "$PROJECT_DIR/backups"
+
+ensure_local_config_files
 
 certbot_extra_domains=''
 if [ -n "$webmail_hostname" ] && [ "$webmail_hostname" != "$mail_hostname" ]; then

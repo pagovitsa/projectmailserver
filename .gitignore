@@ -6,6 +6,7 @@ backups/*
 !backups/.gitkeep
 certs/*
 !certs/live/
+certs/live/*
 !certs/.gitkeep
 !certs/live/.gitkeep
 config/*
