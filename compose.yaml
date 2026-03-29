@@ -1,0 +1,109 @@
+services:
+  mailserver:
+    image: ghcr.io/docker-mailserver/docker-mailserver:latest
+    container_name: mailserver
+    network_mode: host
+    hostname: ${MAILSERVER_HOSTNAME}
+    env_file:
+      - ./mailserver.env
+    environment:
+      OVERRIDE_HOSTNAME: ${MAILSERVER_HOSTNAME}
+      POSTMASTER_ADDRESS: ${POSTMASTER_ADDRESS}
+      TZ: ${TZ}
+      SSL_TYPE: manual
+      SSL_CERT_PATH: /tmp/dms/custom-certs/live/fullchain.pem
+      SSL_KEY_PATH: /tmp/dms/custom-certs/live/privkey.pem
+    volumes:
+      - ./data/mail-data:/var/mail
+      - ./data/mail-state:/var/mail-state
+      - ./data/mail-logs:/var/log/mail
+      - ./config:/tmp/docker-mailserver
+      - ./certs:/tmp/dms/custom-certs:ro
+      - /etc/localtime:/etc/localtime:ro
+    cap_add:
+      - NET_ADMIN
+    restart: unless-stopped
+
+  roundcube:
+    image: roundcube/roundcubemail:latest-apache
+    container_name: roundcube
+    depends_on:
+      - mailserver
+    environment:
+      ROUNDCUBEMAIL_DB_TYPE: sqlite
+      ROUNDCUBEMAIL_DEFAULT_HOST: ssl://${MAILSERVER_HOSTNAME}
+      ROUNDCUBEMAIL_DEFAULT_PORT: 993
+      ROUNDCUBEMAIL_SMTP_SERVER: ssl://${MAILSERVER_HOSTNAME}
+      ROUNDCUBEMAIL_SMTP_PORT: 465
+      ROUNDCUBEMAIL_REQUEST_PATH: /
+      ROUNDCUBEMAIL_SKIN: elastic
+    extra_hosts:
+      - host.docker.internal:host-gateway
+      - ${MAILSERVER_HOSTNAME}:host-gateway
+    ports:
+      - 127.0.0.1:${ROUNDCUBE_HTTP_PORT:-8080}:80
+    volumes:
+      - ./config/roundcube:/var/roundcube/config
+      - ./data/roundcube/db:/var/roundcube/db
+      - ./data/roundcube/enigma:/var/roundcube/enigma
+      - ./data/roundcube/temp:/tmp/roundcube-temp
+      - /etc/localtime:/etc/localtime:ro
+    restart: unless-stopped
+
+  certbot-init:
+    image: certbot/dns-cloudflare:latest
+    entrypoint:
+      - /bin/sh
+      - /project/scripts/certbot-entrypoint.sh
+    env_file:
+      - ./.env
+    environment:
+      CERTBOT_CLOUDFLARE_CREDENTIALS: /run/secrets/cloudflare.ini
+      CERTBOT_TARGET_DIR: /tmp/dms-certs/live
+    command:
+      - issue
+    volumes:
+      - ./scripts:/project/scripts:ro
+      - ./letsencrypt/config:/etc/letsencrypt
+      - ./letsencrypt/work:/var/lib/letsencrypt
+      - ./letsencrypt/logs:/var/log/letsencrypt
+      - ./certs:/tmp/dms-certs
+      - ./secrets:/run/secrets:ro
+    restart: "no"
+
+  certbot-renew:
+    image: certbot/dns-cloudflare:latest
+    entrypoint:
+      - /bin/sh
+      - /project/scripts/certbot-entrypoint.sh
+    env_file:
+      - ./.env
+    environment:
+      CERTBOT_CLOUDFLARE_CREDENTIALS: /run/secrets/cloudflare.ini
+      CERTBOT_TARGET_DIR: /tmp/dms-certs/live
+    command:
+      - renew-loop
+    volumes:
+      - ./scripts:/project/scripts:ro
+      - ./letsencrypt/config:/etc/letsencrypt
+      - ./letsencrypt/work:/var/lib/letsencrypt
+      - ./letsencrypt/logs:/var/log/letsencrypt
+      - ./certs:/tmp/dms-certs
+      - ./secrets:/run/secrets:ro
+    restart: unless-stopped
+
+  dns-sync:
+    image: alpine:3.20
+    env_file:
+      - ./.env
+    environment:
+      CLOUDFLARE_TOKEN_FILE: /run/secrets/cloudflare.ini
+      DOMAINS_FILE: /project/domains.txt
+    command: >-
+      /bin/sh -ec
+      "apk add --no-cache curl python3 >/dev/null && /project/scripts/cloudflare-dns-sync.sh"
+    volumes:
+      - ./scripts:/project/scripts:ro
+      - ./domains.txt:/project/domains.txt:ro
+      - ./secrets:/run/secrets:ro
+    restart: "no"
